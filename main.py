@@ -33,10 +33,17 @@ Version:    2016-07-08
 from __future__ import print_function
 
 import os
+import re
+import nltk
+import json
+import numpy as np
+
 from argparse import ArgumentParser
 from subprocess import Popen
 from sys import argv
 from sys import stderr
+from nltk.corpus import stopwords
+from parser import parse
 
 JAVA_BIN_PATH = 'java'
 DOT_BIN_PATH = 'dot'
@@ -96,7 +103,7 @@ def generate_graphviz_graph(entity_relations, verbose=True):
     print('Wrote graph to {} and {}'.format(out_dot, out_png))
 
 
-def stanford_ie(input_filename, verbose=True, generate_graphviz=False):
+def stanford_ie(input_filename, verbose=False, generate_graphviz=False):
     out = tmp_folder + 'out.txt'
     input_filename = input_filename.replace(',', ' ')
 
@@ -124,7 +131,6 @@ def stanford_ie(input_filename, verbose=True, generate_graphviz=False):
     with open(out, 'r') as output_file:
         results_str = output_file.readlines()
     os.remove(out)
-
     results = process_entity_relations(results_str, verbose)
     if generate_graphviz:
         generate_graphviz_graph(results, verbose)
@@ -132,20 +138,107 @@ def stanford_ie(input_filename, verbose=True, generate_graphviz=False):
     return results
 
 
-def main(args):
-    arg_p = arg_parse().parse_args(args[1:])
-    filename = arg_p.filename
-    verbose = arg_p.verbose
-    generate_graphviz = arg_p.generate_graph
-    # print(arg_p)
-    if filename is None:
-        print('please provide a text file containing your input. Program will exit.')
-        exit(1)
-    if verbose:
-        debug_print('filename = {}'.format(filename), verbose)
-    entities_relations = stanford_ie(filename, verbose, generate_graphviz)
+def drop_stopwords(sentence):
+    """
 
-    print('\n'.join([' |'.join(a) for a in entities_relations]))
+    :param sentence:
+    :return: sentence without stop words (str)
+    """
+    # punct = re.compile(
+    #    '[\\!\\"\\#\\$\\&\\\'\\(\\)\\*\\+\\,\\-\\.\\/\\:\\;\\<\\=\\>\\?\\@\\[\\\\\\]\\^_\\`\\{\\|\\}\\~]', 0)
+    # return punct.sub(' ', sentence.lower())
+    stop_words = stopwords.words('english')
+    stop_words = [elem for elem in stop_words if elem not in ['and']]
+    not_stop = [word for word in sentence.split() if word not in stop_words]
+    return ' '.join(not_stop).lower()
+
+
+def decode_alpha(word):
+    """
+    drop alpha and beta (doesn't work now)
+    :param word:
+    :return:
+    """
+    return re.sub("\u03B1", "alpha", word)
+
+
+def normalize(sentence):
+    """
+    doesn't use it
+    """
+    # porter = PorterStemmer()
+
+    stop_words = stopwords.words('english')
+    not_stop = [word for word in sentence.split() if word not in stop_words]
+    # return ' '.join([porter.stem(word) for word in not_stop])
+    return not_stop
+
+
+def group(genes, entities):
+    """
+    create lists for each gene relations
+
+    :param genes:
+    :param entities:
+    :return:
+    """
+    genes_relations = []
+    for gen in genes:
+        genes_relations.append(list(filter(lambda x: x[0] == gen, entities)))
+
+    return genes_relations
+
+
+def match(groups):
+    """
+    choose one relations for each activity type
+    now it's choosing by len of third part, in the future it's classification (ranging) task
+    :param groups:
+    :return:
+    """
+    matches = []
+    for group in groups:
+        matches.append(group[(np.argmax(list(map(lambda x: len(x[2]), group))))])
+    return matches
+
+
+def main(args):
+    nltk.download('stopwords')  # download stopwords for nltk
+    parser = parse.Parser()  # init parser
+    ids = parser.list_ids()  # get abstracts id
+    data = []
+    for id in ids[:2]:
+        try:
+            abstract = drop_stopwords(parser.get_abstract(id))
+            genes_list = [drop_stopwords(elem) for elem in parser.parse_json(id)]
+            with open('samples.txt', 'w') as f:  # write abstract to file for launch it from command line
+                                                # BAD part need to change it
+                f.write(abstract)
+            arg_p = arg_parse().parse_args(args[1:])
+            filename = arg_p.filename
+            verbose = arg_p.verbose
+            # something from original stanfords code
+
+            if filename is None:
+                print('please provide a text file containing your input. Program will exit.')
+                exit(1)
+            if verbose:
+                debug_print('filename = {}'.format(filename), verbose)
+
+            entities_relations = stanford_ie(filename)  # main part
+
+            try:
+                entities_relations = [elem for elem in entities_relations if elem[0] in genes_list]
+                set_genes = list(set([elem[0] for elem in entities_relations]))
+                data.append({'id': id, 'abstract': abstract, 'genes': genes_list, 'gen': set_genes,
+                             'match': match(group(set_genes, entities_relations))})
+            except ValueError:
+                data.append({'id': 'no relations'})
+        except KeyError:
+            data.append({'id': 'no data'})
+
+    with open('relations_3000.json', 'w') as f:
+        json.dump(data, f)
 
 
 if __name__ == '__main__':
